@@ -63,7 +63,7 @@ async def create_task(new_task: Task):
         if new_task.title == task["title"]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task with specified title already exists")
 
-    new_task.id = max([task["id"] for task in tasks], default=0) + 1 # id sie samo ustawia nawet jak podany jakies inne niz default
+    new_task.id = max([task["id"] for task in tasks], default=0) + 1 # id will set automatically even if user want to change it
     tasks.append(
         {"id": new_task.id,
          "title": new_task.title,
