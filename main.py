@@ -107,9 +107,10 @@ def checking_task_status(task_id):
             return timer
     return None
 
-@app.get("/pomodoro")
-async def get_pomodoro(): #w celach testowych
-    return pomodoro_sessions
+#for testing purposes
+# @app.get("/pomodoro")
+# async def get_pomodoro():
+#     return pomodoro_sessions
 
 @app.post("/pomodoro")
 async def create_pomodoro_timer(task_id:int):
