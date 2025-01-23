@@ -20,23 +20,20 @@ class PomodoroTimer(SQLModel, table=True):
     completed: bool = Field(default=False)
 
 
-# Tworzenie bazy danych
 DATABASE_URL = "sqlite:///Database/database.db"
 engine = create_engine(DATABASE_URL)
 
 SQLModel.metadata.create_all(engine)
 
 
-# Dependency do sesji bazy danych
 def get_session():
     with Session(engine) as session:
         yield session
 
 
-# Handlery
 @app.get("/")
 async def root():
-    return "Hello World!"
+    return "I hope it works :S"
 
 @app.get("/tasks")
 def load_all_tasks(status_sort: Optional[str] = None, session: Session = Depends(get_session)):
@@ -60,7 +57,6 @@ def get_task_by_id(task_id: int, session: Session = Depends(get_session)):
 
 @app.post("/tasks", response_model=Task)
 def create_task(new_task: Task, session: Session = Depends(get_session)):
-    # Sprawdzenie, czy istnieje zadanie o takim samym tytule
     task_exists = session.exec(select(Task).where(Task.title == new_task.title)).first()
     if task_exists:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task with specified title already exists")
@@ -88,7 +84,6 @@ def update_task(task_id: int, updated_task: Task, session: Session = Depends(get
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task with specified id doesn't exist")
 
-    # Sprawdzenie, czy istnieje zadanie o takim samym tytule
     duplicate_task = session.exec(select(Task).where(Task.title == updated_task.title, Task.id != task_id)).first()
     if duplicate_task:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task with specified title already exists")
@@ -105,12 +100,10 @@ def update_task(task_id: int, updated_task: Task, session: Session = Depends(get
 
 @app.post("/pomodoro", response_model=PomodoroTimer)
 def create_pomodoro_timer(task_id: int, session: Session = Depends(get_session)):
-    # Sprawdzenie, czy zadanie istnieje
     task = session.get(Task, task_id)
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task with specified id not found")
 
-    # Sprawdzenie aktywnego timera
     active_timer = session.exec(
         select(PomodoroTimer).where(PomodoroTimer.task_id == task_id, PomodoroTimer.completed == False)
     ).first()
