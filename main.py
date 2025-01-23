@@ -1,173 +1,166 @@
 from typing import Optional
-from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, status, Depends
 from datetime import datetime, timedelta
+from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 app = FastAPI()
 
-class Task(BaseModel):
-    id:int
-    title: str = Field(...,min_length=3, max_length=100)
+class Task(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    title: str = Field(..., min_length=3, max_length=100)
     description: Optional[str] = Field(None, max_length=300)
-    status: str = Field(default="do wykonania", pattern="^(do wykonania|w trakcie|zakończone)$")
+    status: str = Field(default="do wykonania", regex="^(do wykonania|w trakcie|zakończone)$")
 
-class PomodoroTimer(BaseModel):
-    task_id: int
+
+class PomodoroTimer(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    task_id: int = Field(foreign_key="task.id")
     start_time: datetime
     end_time: Optional[datetime] = None
-    completed: bool = False
+    completed: bool = Field(default=False)
 
-tasks = [
-{
-"id": 1,
-"title": "Nauka FastAPI",
-"description": "Przygotować przykładowe API z dokumentacją",
-"status": "do wykonania",
-}
-]
 
-pomodoro_sessions = [
-{
-"task_id": 1,
-"start_time": "2025-01-11T12:00:00",
-"end_time": "2025-01-11T12:25:00",
-"completed": True,
-}
-]
+# Tworzenie bazy danych
+DATABASE_URL = "sqlite:///Database/database.db"
+engine = create_engine(DATABASE_URL)
+
+SQLModel.metadata.create_all(engine)
+
+
+# Dependency do sesji bazy danych
+def get_session():
+    with Session(engine) as session:
+        yield session
+
+
+# Handlery
 
 @app.get("/tasks")
-async def load_all_tasks(status_sort:Optional[str] = None):
+def load_all_tasks(status_sort: Optional[str] = None, session: Session = Depends(get_session)):
+    query = select(Task)
     if status_sort:
-        filtered_tasks=[]
+        query = query.where(Task.status == status_sort)
 
-        for task in tasks:
-            if task["status"] == status_sort:
-                filtered_tasks.append(task)
-
-        if not filtered_tasks:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tasks with specified status not found")
-
-        return filtered_tasks
+    tasks = session.exec(query).all()
+    if not tasks:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tasks with specified status not found")
     return tasks
 
+
 @app.get("/tasks/{task_id}")
-async def get_task_by_id(task_id: int):
-    for task in tasks:
-        if task["id"] == task_id:
-            return task
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task with specified id not found")
+def get_task_by_id(task_id: int, session: Session = Depends(get_session)):
+    task = session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task with specified id not found")
+    return task
 
-@app.post("/tasks")
-async def create_task(new_task: Task):
-    for task in tasks:
-        if new_task.title == task["title"]:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task with specified title already exists")
 
-    new_task.id = max([task["id"] for task in tasks], default=0) + 1 # id will set automatically even if user want to change it
-    tasks.append(
-        {"id": new_task.id,
-         "title": new_task.title,
-         "description": new_task.description,
-         "status": new_task.status
-         })
+@app.post("/tasks", response_model=Task)
+def create_task(new_task: Task, session: Session = Depends(get_session)):
+    # Sprawdzenie, czy istnieje zadanie o takim samym tytule
+    task_exists = session.exec(select(Task).where(Task.title == new_task.title)).first()
+    if task_exists:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task with specified title already exists")
+
+    session.add(new_task)
+    session.commit()
+    session.refresh(new_task)
     return new_task
 
+
 @app.delete("/tasks/{task_id}")
-async def delete_task(task_id: int):
-    for task in tasks:
-        if task["id"] == task_id:
-            tasks.remove(task)
-            return {"message": f"Task with ID:{task_id} was deleted successfully"}
-    #mechanism for deleting timers related with task should be added in the future :)
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task with specified id doesn't exist")
+def delete_task(task_id: int, session: Session = Depends(get_session)):
+    task = session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task with specified id doesn't exist")
+
+    session.delete(task)
+    session.commit()
+    return {"message": f"Task with ID:{task_id} was deleted successfully"}
+
 
 @app.put("/tasks/{task_id}")
-async def update_task(task_id: int, updated_task: Task):
-    for task in tasks:
-        if task["id"] == task_id:
-            for t in tasks:
-                if t["title"] ==updated_task.title:
-                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task with specified title already exists")
-            task["title"] = updated_task.title
-            task["description"] = updated_task.description
-            task["status"] = updated_task.status
-            return {"message": f"Task with ID:{task_id} was updated successfully", "task": task}
+def update_task(task_id: int, updated_task: Task, session: Session = Depends(get_session)):
+    task = session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task with specified id doesn't exist")
 
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task with specified id doesn't exist")
+    # Sprawdzenie, czy istnieje zadanie o takim samym tytule
+    duplicate_task = session.exec(select(Task).where(Task.title == updated_task.title, Task.id != task_id)).first()
+    if duplicate_task:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task with specified title already exists")
 
-def checking_task_id(task_id):
-    for task in tasks:
-        if task["id"] == task_id:
-            return task
-    return None
+    task.title = updated_task.title
+    task.description = updated_task.description
+    task.status = updated_task.status
 
-def checking_task_status(task_id):
-    for timer in pomodoro_sessions:
-        if timer["task_id"] == task_id and not timer["completed"]:
-            return timer
-    return None
+    session.add(task)
+    session.commit()
+    session.refresh(task)
+    return {"message": f"Task with ID:{task_id} was updated successfully", "task": task}
 
-#for testing purposes
-# @app.get("/pomodoro")
-# async def get_pomodoro():
-#     return pomodoro_sessions
 
-@app.post("/pomodoro")
-async def create_pomodoro_timer(task_id:int):
-
-    if checking_task_id(task_id) is None:
+@app.post("/pomodoro", response_model=PomodoroTimer)
+def create_pomodoro_timer(task_id: int, session: Session = Depends(get_session)):
+    # Sprawdzenie, czy zadanie istnieje
+    task = session.get(Task, task_id)
+    if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task with specified id not found")
 
-    if checking_task_status(task_id):
+    # Sprawdzenie aktywnego timera
+    active_timer = session.exec(
+        select(PomodoroTimer).where(PomodoroTimer.task_id == task_id, PomodoroTimer.completed == False)
+    ).first()
+
+    if active_timer:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Timer for that task has been already set")
 
-    timer_end_time=datetime.now() + timedelta(minutes=25)
+    timer_end_time = datetime.now() + timedelta(minutes=25)
+    new_timer = PomodoroTimer(
+        task_id=task_id,
+        start_time=datetime.now(),
+        end_time=timer_end_time,
+        completed=False,
+    )
+    session.add(new_timer)
+    session.commit()
+    session.refresh(new_timer)
+    return new_timer
 
-    session={
-        "task_id": task_id,
-        "start_time": datetime.now().isoformat(),
-        "end_time": timer_end_time.isoformat(),
-        "completed": False,
-    }
-    pomodoro_sessions.append(session)
-    return {"created timer":session, "all timers":pomodoro_sessions}
 
 @app.post("/pomodoro/{task_id}/stop")
-async def stop_pomodoro_timer(task_id: int):
-    active_timer = None
-    for timer in pomodoro_sessions:
-        if timer["task_id"] == task_id and not timer["completed"]:
-            end_time = datetime.fromisoformat(timer["end_time"])
-            if end_time > datetime.now():
-                active_timer = timer
-                break
+def stop_pomodoro_timer(task_id: int, session: Session = Depends(get_session)):
+    active_timer = session.exec(
+        select(PomodoroTimer).where(PomodoroTimer.task_id == task_id, PomodoroTimer.completed == False)
+    ).first()
 
     if not active_timer:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No active timer found for the given task ID")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="No active timer found for the given task ID")
 
-    active_timer["completed"] = True
-    #function for changing task status after stopping timer could be added
-
+    active_timer.completed = True
+    session.add(active_timer)
+    session.commit()
+    session.refresh(active_timer)
     return {"message": f"Timer for task ID {task_id} has been stopped successfully", "timer": active_timer}
 
+
 @app.get("/pomodoro/stats")
-async def pomodoro_stats():
+def pomodoro_stats(session: Session = Depends(get_session)):
+    timers = session.exec(select(PomodoroTimer).where(PomodoroTimer.completed == True)).all()
+
     stats = {}
     total_time = 0
-    for session in pomodoro_sessions:
-        if session["completed"]:
-            task_id = session["task_id"]
-            if task_id not in stats:
-                stats[task_id] = 0
+    for timer in timers:
+        task_id = timer.task_id
+        if task_id not in stats:
+            stats[task_id] = 0
 
-            start_time=datetime.fromisoformat(session["start_time"])
-            end_time=datetime.fromisoformat(session["end_time"])
+        session_time = (timer.end_time - timer.start_time).seconds
+        stats[task_id] += session_time
+        total_time += session_time
 
-            session_time = (end_time-start_time).seconds
-            stats[task_id] += session_time
-            total_time += session_time
     return {
-        "per_task_minutes": {f"ID:{task}": round(time / 60, 2) for task, time in stats.items()},
+        "per_task_minutes": {f"ID:{task_id}": round(time / 60, 2) for task_id, time in stats.items()},
         "total_time_minutes": round(total_time / 60, 2),
     }
-
