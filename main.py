@@ -34,6 +34,9 @@ def get_session():
 
 
 # Handlery
+@app.get("/")
+async def root():
+    return "Hello World!"
 
 @app.get("/tasks")
 def load_all_tasks(status_sort: Optional[str] = None, session: Session = Depends(get_session)):
